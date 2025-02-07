@@ -20,8 +20,8 @@
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
 # GitHub: https://github.com/Kudesnik-IT
 # Версия: 1.0
-# Дата создания: 2025-06-02
-# Последнее обновление: 2025-06-02
+# Дата создания: 2025-02-06
+# Последнее обновление: 2025-02-06
 #===============================================================================
 
 # Лицензия: MIT License
@@ -717,5 +717,5 @@ view_report
 
 #---
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
-# GitHub: https://github.com/Kudesnik-IT
+# GitHub: https://github.com/Kudesnik-IT/proxmox-create-vm
 #---

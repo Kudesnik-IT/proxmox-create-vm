@@ -20,8 +20,8 @@
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
 # GitHub: https://github.com/Kudesnik-IT
 # Версия: 1.0
-# Дата создания: 2025-02-06
-# Последнее обновление: 2025-02-06
+# Дата создания: 2025-06-02
+# Последнее обновление: 2025-06-02
 #===============================================================================
 
 # Лицензия: MIT License
@@ -61,6 +61,7 @@ VM_NAME="Debian-Srv"      # VM name = ${VM_NAME}{value 1st argument}
 
 VM_IP=""                  # VM IPv4 value format "<IPv4/Mask>; If empty string, then there will be DHCP setting."
 VM_GATEWAY=""             # VM network gateway, only if set VM_IP address
+VM_BRIDGE="vmbr0"         # VM bridge name
 
 CI_USER="virtman"         # username
 CI_PASS=""                # hash of the user's password if password authentication is used
@@ -585,7 +586,7 @@ if ! qm create "$VM_ID" \
   --cores 4 \
   --sockets 1 \
   --ostype l26 \
-  --net0 virtio,bridge=vmbrDMZ1,queues=4 \
+  --net0 virtio,bridge=${VM_BRIDGE},queues=4 \
   --ipconfig0 "${IPCONFIG}" \
   --nameserver 8.8.8.8 \
   --searchdomain srv \
@@ -717,5 +718,5 @@ view_report
 
 #---
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
-# GitHub: https://github.com/Kudesnik-IT/proxmox-create-vm
+# GitHub: https://github.com/Kudesnik-IT
 #---

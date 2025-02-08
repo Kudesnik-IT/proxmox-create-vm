@@ -64,7 +64,7 @@ VM_GATEWAY=""             # VM network gateway, only if set VM_IP address
 VM_BRIDGE="vmbr0"         # VM bridge name
 
 CI_USER="virtman"         # username
-CI_PASS=""                # hash of the user's password if password authentication is used
+CI_PASS=''                # hash of the user's password if password authentication is used
 
 STORAGE_SNIP=local        # storage for snippets (usually the same as the iso images storage)
 STORAGE_DISK=local-lvm    # storage for virtual machine disk images
@@ -472,6 +472,7 @@ if [[ ! -n "$CI_USER" ]]; then
 fi
 
 CHPASSWD=""
+LOCK_PASSWD=""
 if $SET_USER_PASS ; then  
   # Check if CI_PASS is empty and generate a hashed password if necessary
   if [[ -z "$CI_PASS" ]]; then
@@ -483,7 +484,9 @@ if $SET_USER_PASS ; then
       log "Error: Failed to generate hashed password using openssl."
       exit 1
     fi
-
+    
+    LOCK_PASSWD="lock_passwd: false
+    "
     CHPASSWD="
 chpasswd:
   expire: false
@@ -521,8 +524,7 @@ manage_etc_hosts: true
 #
 users:
   - name: ${CI_USER}
-    lock_passwd: false
-    shell: /bin/bash
+    ${LOCK_PASSWD}shell: /bin/bash
     groups: sudo
     ssh_authorized_keys:
       - $(cat "${KEYS}.pub")
@@ -718,5 +720,5 @@ view_report
 
 #---
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
-# GitHub: https://github.com/Kudesnik-IT
+# GitHub: https://github.com/Kudesnik-IT/proxmox-create-vm
 #---

@@ -18,7 +18,7 @@
 # |_|\_\  \__,_|  \__,_|  \___| |___/ |_| |_| |_| |_|\_\         |___|   |_|  
 #                                                                             
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
-# GitHub: https://github.com/Kudesnik-IT
+# GitHub: https://github.com/Kudesnik-IT/proxmox-create-vm
 # Версия: 1.0
 # Дата создания: 2025-06-02
 # Последнее обновление: 2025-06-02

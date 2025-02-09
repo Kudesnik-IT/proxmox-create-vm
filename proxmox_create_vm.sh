@@ -87,6 +87,8 @@ SET_FILE_RAW_IMG=true     # adds the extension ".img" to FILE_RAW, then the file
 DEL_FILE_RAW=false        # delete file after creating virtual machine
 SET_IP_FROM_ID=false      # if the IP address is specified, then the value of the 1st argument will be added to the 4th octet
 
+SET_DEL_CLOUDINIT=false   # remove service cloud-init after execution
+
 
 ###################
 # --- FUNCTIONS ---
@@ -94,7 +96,7 @@ SET_IP_FROM_ID=false      # if the IP address is specified, then the value of th
 
 # Function to output messages with indentation
 log() {
-  echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
+  echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] $1"
 }
 
 # Function view help message
@@ -233,6 +235,11 @@ view_report() {
   # Docker-compose installation
   echo -e " ${GREEN}✓ ${NC}The package ${CYAN}docker-compose${NC} should be installed on the virtual machine.\n"
 
+  # RAW file
+  if ! $DEL_FILE_RAW ; then
+    echo -e "${GREEN}✓ ${NC}The image file is saved in the ${CYAN}${FULL_PATH}${NC}\n"
+  fi
+
   # Snippet creation
   echo -e " ${GREEN}✓ ${NC}A snippet named ${CYAN}${FILE_NAME}${NC} has been created:"
   echo -e "      • Location: ${CYAN}${SNIP_PATH}${NC}"
@@ -258,6 +265,24 @@ view_report() {
   echo -e "${GREEN}=== Done! ===${NC}"
 }
 
+# progress bar for qm import raw image
+progress_bar() {
+  local progress=false
+  while read -r line; do
+    if [[ "$line" =~ transferred\ ([0-9.]+)\ [A-Za-z]+\ of\ ([0-9.]+)\ [A-Za-z]+\ \(([0-9.]+%)\) ]]; then
+      progress=$(printf "%.0f" "${BASH_REMATCH[3]%\%}")
+      printf "\r[%-50s] %d%%" $(printf "#%.0s" $(seq 1 $((progress / 2)))) "$progress"
+    else
+      if [[ "${progress}" == "false" ]]; then
+        RES="${RES}${line}"
+      else
+        progress=false
+        RES="${RES}\n${line}"
+        printf "\r%-80s\r" ""
+      fi
+    fi
+  done
+}
 
 ##############
 # --- MAIN ---
@@ -471,8 +496,6 @@ if [[ ! -n "$CI_USER" ]]; then
   exit 1
 fi
 
-CHPASSWD=""
-LOCK_PASSWD=""
 if $SET_USER_PASS ; then  
   # Check if CI_PASS is empty and generate a hashed password if necessary
   if [[ -z "$CI_PASS" ]]; then
@@ -484,61 +507,53 @@ if $SET_USER_PASS ; then
       log "Error: Failed to generate hashed password using openssl."
       exit 1
     fi
-    
-    LOCK_PASSWD="lock_passwd: false
-    "
-    CHPASSWD="
-chpasswd:
-  expire: false
-  users:    
-    - name: ${CI_USER}
-      password: ${CI_PASS}
-      type: hash
-"
   fi
+else
+  CI_PASS=''
 fi
 
 # Create the directory if it doesn't exist
 mkdir -p "$SNIP_PATH"
+if [[ $? -ne 0 ]]; then
+  log "Error: Failed to create directory '$SNIP_PATH'."
+  exit 1
+fi
 
-# Creating a yaml file with initial configuration
-cat <<EOF > "${SNIP_PATH}${FILE_NAME}"
-#cloud-config
-#############
-
-
-## Main settings
+# BEGIN: Creating a yaml file with initial configuration
 #
-hostname: Debian-Srv${ID_NUM}
-manage_etc_hosts: true
+CNIP_FILE="${SNIP_PATH}${FILE_NAME}"
 
-#locale: en_US
-#timezone: Asia/Yekaterinburg
-#keyboard:
-#  layout: us
+# type config file
+echo -e "#cloud-config\n#############\n" > "${CNIP_FILE}"
+
+# Main setting
+echo -e "\n## Main settings\n#" >> "${CNIP_FILE}"
+echo "hostname: Debian-Srv${ID_NUM}" >> "${CNIP_FILE}"
+echo "manage_etc_hosts: true" >> "${CNIP_FILE}"
+echo -e "#\n##\n" >> "${CNIP_FILE}"
+
+# Access setting
+echo -e "\n## Access settings\n#" >> "${CNIP_FILE}"
+echo "users:" >> "${CNIP_FILE}"
+# add user CI_USER
+echo "  - name: ${CI_USER}" >> "${CNIP_FILE}"
+if $SET_USER_PASS ; then
+  echo "    lock_passwd: false" >> "${CNIP_FILE}"
+  echo "    passwd: ${CI_PASS}" >> "${CNIP_FILE}"
+fi
+echo -e "    shell: /bin/bash\n    groups: sudo" >> "${CNIP_FILE}"
+echo -en "    ssh_authorized_keys:\n      - " >> "${CNIP_FILE}"
+cat "${KEYS}.pub" >> "${CNIP_FILE}"
+echo -e "\n" >> "${CNIP_FILE}"
 #
-##
+echo "disable_root: true" >> "${CNIP_FILE}"
+echo "ssh_pwauth: false" >> "${CNIP_FILE}"
+echo -e "#\n##\n" >> "${CNIP_FILE}"
 
-
-## Access settings
-#
-users:
-  - name: ${CI_USER}
-    ${LOCK_PASSWD}shell: /bin/bash
-    groups: sudo
-    ssh_authorized_keys:
-      - $(cat "${KEYS}.pub")
-
-${CHPASSWD}
-disable_root: true       # /etc/ssh/sshd_config -> PermitRootLogin no
-ssh_pwauth: false        # /etc/ssh/sshd_config -> PasswordAuthentication no
-#
-##
-
-
-## Services install and starting
-#
-runcmd:
+# Services
+echo -e "\n## Services install and starting\n#" >> "${CNIP_FILE}"
+echo "runcmd:" >> "${CNIP_FILE}"
+cat <<-EOF >> "${CNIP_FILE}"
   - ['apt', 'update']
   - ['apt', 'upgrade', '-y']
   - ['apt', 'install', '-y', 'apt-transport-https', 'ca-certificates', 'curl', 'gnupg']
@@ -550,23 +565,33 @@ runcmd:
   - ['apt', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-compose-plugin']
   - ['systemctl', 'enable', 'docker']
   - ['systemctl', 'start', 'docker']
-#
-##
-
-
-final_message: "Completing system run up."
 EOF
+if $SET_DEL_CLOUDINIT ; then
+cat <<-EOF >> "${CNIP_FILE}"
+  - apt remove --purge -y cloud-init
+  - rm -rf /etc/cloud/ /var/lib/cloud/
+EOF
+fi
+echo -e "#\n##\n" >> "${CNIP_FILE}"
+
+# final message
+echo -e "\nfinal_message: \"Completing system run up.\"" >> "${CNIP_FILE}"
+#
+## END: Creating a yaml ...
 
 # Check if the file was created successfully
-if [[ -f "${SNIP_PATH}${FILE_NAME}" ]]; then
-  log "File '${SNIP_PATH}${FILE_NAME}' has been successfully created."
+if [[ -f "${CNIP_FILE}" ]]; then
+  log "File '${CNIP_FILE}' has been successfully created."
 else
-  log "Error: File '${SNIP_PATH}${FILE_NAME}' was not created."
+  log "Error: File '${CNIP_FILE}' was not created."
   exit 1
 fi
 
-chmod 644 "${SNIP_PATH}${FILE_NAME}"
-
+chmod 644 "${CNIP_FILE}"
+if [[ $? -ne 0 ]]; then
+  log "Error: Failed to change permissions for file '${CNIP_FILE}'."
+  exit 1
+fi
 
 # --- STEP 3: Creating virtual machine ---
 log "STEP 3: Creating virtual machine with ID $VM_ID..."
@@ -612,7 +637,7 @@ else
 fi
   
 log "Creating cloud-init from VM ID $VM_ID..."
-qm set "$VM_ID" --scsi3 "${STORAGE_DISK}:cloudinit"
+RES=$(qm set "$VM_ID" --scsi3 "${STORAGE_DISK}:cloudinit")
 
 # Check if the Cloud-Init disk was created successfully
 if qm config "$VM_ID" | grep -q "scsi3.*vm-${VM_ID}-cloudinit"; then
@@ -668,7 +693,12 @@ if qm config "$VM_ID" | grep -q "${STORAGE_DISK}:${DISK_NAME}"; then
 else
   # Import the disk into Proxmox
   log "Importing disk '$FILE_RAW' into storage '$STORAGE_DISK'..."
-  qm importdisk "$VM_ID" "$FULL_PATH" "$STORAGE_DISK"
+  RES=""
+  stdbuf -oL qm importdisk "$VM_ID" "$FULL_PATH" "$STORAGE_DISK" | progress_bar
+  if [[ $? -ne 0 ]]; then
+    log "Error: Command 'qm importdisk' failed.\n${RES}"
+    exit 1
+  fi
   
   # Check if the disk was imported successfully
   if ! qm config "$VM_ID" | grep -q "${STORAGE_DISK}:${DISK_NAME}"; then
@@ -677,7 +707,7 @@ else
   fi
 
   log "Configuring SCSI disk for VM ID $VM_ID..."
-  qm set "$VM_ID" --scsihw virtio-scsi-pci --scsi0 "${STORAGE_DISK}:${DISK_NAME},backup=0,discard=on,iothread=1,ssd=1"
+  RES=$(qm set "$VM_ID" --scsihw virtio-scsi-pci --scsi0 "${STORAGE_DISK}:${DISK_NAME},backup=0,discard=on,iothread=1,ssd=1")
 fi
 
 # Verify that the SCSI disk was added
@@ -691,7 +721,12 @@ fi
 # Set boot order to boot from scsi0
 log "Setting boot order to boot from scsi0..."
 #qm set "$VM_ID" --boot c --bootdisk scsi0
-qm set "$VM_ID" --boot order=scsi0
+RES=$(qm set "$VM_ID" --boot order=scsi0)
+if [[ $? -ne 0 ]]; then
+  log "Error: Failed to set boot order for VM ID $VM_ID."
+  exit 1
+fi
+
 
 # Verify boot order
 if qm config "$VM_ID" | grep -q "boot.*order=scsi0"; then

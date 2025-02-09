@@ -88,7 +88,7 @@ SET_FILE_RAW_IMG=true     # adds the extension ".img" to FILE_RAW, then the file
 DEL_FILE_RAW=false        # delete file after creating virtual machine
 SET_IP_FROM_ID=false      # if the IP address is specified, then the value of the 1st argument will be added to the 4th octet
 
-SET_DEL_CLOUDINIT=true    # remove service cloud-init after execution
+SET_DEL_CLOUDINIT=false   # remove service cloud-init after execution
 
 
 ###################
@@ -598,11 +598,10 @@ cat <<-EOF >> "${CNIP_FILE}"
       fi
       sync && sleep 2
       apt remove --purge -y cloud-init
-      if ! rm -rf /etc/cloud /var/lib/cloud; then
+      if ! rm -rf /etc/cloud /var/lib/cloud /var/log/cloud*; then
         echo "Error: Failed to remove cloud-init files." >> /var/log/cloud-init-remove.log
         exit 1
       fi
-      rm -f /var/log/cloud-init-remove.log
     ) &
 EOF
 fi
@@ -757,6 +756,8 @@ else
       log "Error: Failed to resize disk."
       exit 1
     fi
+  else
+    VM_DISK_SIZE="$DISK_SIZE"
   fi
 fi
 

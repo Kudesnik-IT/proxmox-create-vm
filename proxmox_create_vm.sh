@@ -73,6 +73,7 @@ SNIP_PATH=/var/lib/vz/snippets/       # snippets storage directory
 ISO_PATH=/var/lib/vz/template/iso/    # iso image storage directory
 
 FILE_RAW="debian-12-genericcloud-amd64.raw"    # name image debian genericcloud
+VM_DISK_SIZE=6            # disk size in gigabytes.
 
 URL_RAW="https://cdimage.debian.org/images/cloud/bookworm/latest/"                 # url image debianm  
 URL_RAW_SHA="https://cdimage.debian.org/images/cloud/bookworm/latest/SHA512SUMS"   # url hash sums images debian
@@ -82,12 +83,12 @@ KEY_NAME="vm-"            # prefix for creating key name
 
 SET_KEY_PASS=false        # set a secret phrase for the key
 SET_USER_PASS=false       # create a password for the user        
-RUN_VM=false              # start the virtual machine after it is created
+RUN_VM=ask                # start the virtual machine after it is created: true (always run), false (никогда не запускать), ask (always ask)
 SET_FILE_RAW_IMG=true     # adds the extension ".img" to FILE_RAW, then the file will be visible if it is in the iso image directory
 DEL_FILE_RAW=false        # delete file after creating virtual machine
 SET_IP_FROM_ID=false      # if the IP address is specified, then the value of the 1st argument will be added to the 4th octet
 
-SET_DEL_CLOUDINIT=false   # remove service cloud-init after execution
+SET_DEL_CLOUDINIT=true    # remove service cloud-init after execution
 
 
 ###################
@@ -214,6 +215,19 @@ update_ip() {
     echo "${new_ip}/${mask}"
 }
 
+# read size disk
+read_disk_size() {
+  DISK_SIZE=$(qm config "$VM_ID" | grep "^scsi0" | grep -oP 'size=\K[0-9]+[GM]')
+  if [[ "$DISK_SIZE" == *G ]]; then
+    DISK_SIZE="${DISK_SIZE%G}"
+  elif [[ "$size" == *M ]]; then
+    DISK_SIZE="$(bc <<< "scale=2; ${DISK_SIZE%M} / 1024")"
+  else
+    log "Error: Unsupported size format ('$DISK_SIZE'). Use 'G' or 'M'."
+    exit 1
+  fi
+}
+
 # Function view report
 view_report() {
   # ANSI color codes
@@ -232,12 +246,14 @@ view_report() {
   # Virtual machine creation
   echo -e " ${GREEN}✓ ${NC}The virtual machine has been successfully created.\n"
 
+  echo -e " ${GREEN}✓ ${NC}The root system disk size is ${CYAN}${VM_DISK_SIZE}${NC} GB.\n"
+
   # Docker-compose installation
   echo -e " ${GREEN}✓ ${NC}The package ${CYAN}docker-compose${NC} should be installed on the virtual machine.\n"
 
   # RAW file
   if ! $DEL_FILE_RAW ; then
-    echo -e "${GREEN}✓ ${NC}The image file is saved in the ${CYAN}${FULL_PATH}${NC}\n"
+    echo -e " ${GREEN}✓ ${NC}The image file is saved in the ${CYAN}${FULL_PATH}${NC}\n"
   fi
 
   # Snippet creation
@@ -247,19 +263,23 @@ view_report() {
 
   # Network configuration
   if [[ -n "$VM_IP" ]]; then
-    local NETWORK="IP:${VM_IP}  GW:${VM_GATEWAY}"
+    echo -e " ${GREEN}✓ ${NC}Network configuration: ${CYAN}IP:${VM_IP}  GW:${VM_GATEWAY}${NC}.\n"
   else
-    local NETWORK="DHCP"
+    echo -e " ${GREEN}✓ ${NC}Network configuration: ${CYAN}DHCP${NC}.\n"
   fi
-  echo -e " ${GREEN}✓ ${NC}Network configuration: ${CYAN}${NETWORK}${NC}.\n"
 
   # SSH keys
   echo -e " ${GREEN}✓ ${NC}Keys for connecting to the virtual machine have been generated:"
-  echo -e "      • The keys ${CYAN}key${NC} and ${CYAN}key.pub${NC} are located in the folder ${CYAN}${KEYS_PATH}${NC}."
+  echo -e "      • The keys ${CYAN}${KEY_NAME}${NC} and ${CYAN}${KEY_NAME}.pub${NC} are located in the folder ${CYAN}${KEYS_PATH}${NC}."
   echo -e "      • The public key has been copied to the virtual machine.\n"
 
   # User access
   echo -e " ${GREEN}✓ ${NC}The user for accessing the virtual machine is: ${CYAN}${CI_USER}${NC}.\n"
+  if [[ -n "$VM_IP" ]]; then
+    echo -e "      >_ ssh -i ${KEYS_PATH}${KEY_NAME} ${CI_USER}@${VM_IP}\n"
+  else
+    echo -e "      >_ ssh -i ${KEYS_PATH}${KEY_NAME} ${CI_USER}@<IP>\n"
+  fi
 
   # Final message
   echo -e "${GREEN}=== Done! ===${NC}"
@@ -328,7 +348,7 @@ FULL_PATH="${ISO_PATH}${FILE_RAW}"
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
         -u|--username)
-            if [[ -z "$2" || "$2" =~ ^- ]]; then
+            if [[ -z "${2+x}" || -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
                 help
             fi
@@ -336,7 +356,7 @@ while [[ "$#" -gt 0 ]]; do
             shift 2
             ;;
         -p|--password)
-            if [[ -z "$2" || "$2" =~ ^- ]]; then
+            if [[ -z "${2+x}" ||  -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
                 help
             fi
@@ -344,7 +364,7 @@ while [[ "$#" -gt 0 ]]; do
             shift 2
             ;;
         -a|--auth)
-            if [[ -z "$2" || "$2" =~ ^- ]]; then
+            if [[ -z "${2+x}" ||  -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
                 help
             fi
@@ -359,7 +379,7 @@ while [[ "$#" -gt 0 ]]; do
             shift 2
             ;;
         -i|--ip)
-            if [[ -z "$2" || "$2" =~ ^- ]]; then
+            if [[ -z "${2+x}" ||  -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
                 help
             fi
@@ -390,7 +410,7 @@ while [[ "$#" -gt 0 ]]; do
             shift 2
             ;;
         -g|--gateway)
-            if [[ -z "$2" || "$2" =~ ^- ]]; then
+            if [[ -z "${2+x}" ||  -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
                 help
             fi
@@ -411,7 +431,7 @@ while [[ "$#" -gt 0 ]]; do
             shift 2
             ;;
         -f|--file)
-            if [[ -z "$2" || "$2" =~ ^- ]]; then
+            if [[ -z "${2+x}" ||  -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
                 help
             fi
@@ -469,13 +489,10 @@ else
   # Generate new SSH keys
   log "Generating new SSH keys for VM ID $VM_ID..."
   if $SET_KEY_PASS ; then
-    KEY_PASS=""
+    ssh-keygen -t ed25519 -f "${KEYS}" -C "${KEY_NAME}"
   else
-    KEY_PASS='-N ""'
-  fi 
-  log "KEY_PASS: ${KEY_PASS}"
-  ssh-keygen -t ed25519 -f "$KEYS" -C "${KEY_NAME}" ${KEY_PASS}
-
+    ssh-keygen -t ed25519 -f "${KEYS}" -C "${KEY_NAME}" -N ""
+  fi
   # Verify that the keys were created successfully
   if [[ -f "${KEYS}" && -f "${KEYS}.pub" ]]; then
     log "SSH keys successfully generated:"
@@ -568,8 +585,25 @@ cat <<-EOF >> "${CNIP_FILE}"
 EOF
 if $SET_DEL_CLOUDINIT ; then
 cat <<-EOF >> "${CNIP_FILE}"
-  - apt remove --purge -y cloud-init
-  - rm -rf /etc/cloud/ /var/lib/cloud/
+  - |
+    (
+      echo "Starting cloud-init removal process..." >> /var/log/cloud-init-remove.log
+      timeout=600
+      while pgrep -x "cloud-init" > /dev/null && (( timeout-- > 0 )); do
+        sleep 1
+      done
+      if (( timeout <= 0 )); then
+        echo "Timeout: cloud-init did not finish within 600 seconds, cancel remove cloud-init" >> /var/log/cloud-init-remove.log
+        exit 1
+      fi
+      sync && sleep 2
+      apt remove --purge -y cloud-init
+      if ! rm -rf /etc/cloud /var/lib/cloud; then
+        echo "Error: Failed to remove cloud-init files." >> /var/log/cloud-init-remove.log
+        exit 1
+      fi
+      rm -f /var/log/cloud-init-remove.log
+    ) &
 EOF
 fi
 echo -e "#\n##\n" >> "${CNIP_FILE}"
@@ -622,6 +656,7 @@ if ! qm create "$VM_ID" \
   --boot order=sata0 \
   --balloon 0 \
   --cicustom "user=${STORAGE_SNIP}:snippets/${FILE_NAME}" \
+  --serial0 socket \
   ; then
   log "Error: Failed to create virtual machine with ID $VM_ID."
   exit 1
@@ -708,6 +743,21 @@ else
 
   log "Configuring SCSI disk for VM ID $VM_ID..."
   RES=$(qm set "$VM_ID" --scsihw virtio-scsi-pci --scsi0 "${STORAGE_DISK}:${DISK_NAME},backup=0,discard=on,iothread=1,ssd=1")
+  
+  read_disk_size
+  log "Current scsi0 disk size: ${DISK_SIZE}G"
+  log "Required disk size: ${VM_DISK_SIZE}G"
+  if (( $(echo "$DISK_SIZE < $VM_DISK_SIZE" | bc -l) )); then
+    DIFF_SIZE=$(echo "$VM_DISK_SIZE - $DISK_SIZE" | bc)
+    log "Resizing disk by +${DIFF_SIZE}G..."
+    RES=$(qm resize "$VM_ID" scsi0 "+${DIFF_SIZE}G")
+    if [[ $? -eq 0 ]]; then
+      log "Disk successfully resized to $VM_DISK_SIZE."
+    else
+      log "Error: Failed to resize disk."
+      exit 1
+    fi
+  fi
 fi
 
 # Verify that the SCSI disk was added
@@ -743,15 +793,34 @@ fi
 
 log "Virtual machine creation ending"
 
-if $RUN_VM ; then
-  if qm start "$VM_ID"; then
-    log "Виртуальная машина $VM_ID ($VM_NAME) успешно запущена."
+ANSWER=false
+if [[ "$RUN_VM" == "true" || "$RUN_VM" == "ask" ]]; then
+  if [[ "$RUN_VM" == "true" ]]; then
+    ANSWER="Y"
   else
-    log "Ошибка при запуске виртуальной машины $VM_ID ($VM_NAME)."
+    read -t 10 -rp "Запустить виртуальную машину $VM_ID ($VM_NAME)? (y/n): " ANSWER || echo -e "\n" || ANSWER="n"
+  fi
+  if [[ "$ANSWER" =~ ^[Yy]$ ]]; then
+    log "Запуск виртуальной машины $VM_ID ($VM_NAME)"
+    RES=$(qm start "$VM_ID")
+    if [[ $? -eq 0 ]]; then
+      log "Виртуальная машина $VM_ID ($VM_NAME) успешно запущена."
+      ANSWER="run"
+    else
+      log "Ошибка при запуске виртуальной машины $VM_ID ($VM_NAME)."
+    fi
   fi
 fi
 
 view_report
+
+if [[ "$ANSWER" == "run" ]]; then
+  read -t 10 -rp "Подключиться к терминалу $VM_ID ($VM_NAME)? (y/n): " ANSWER || echo -e "\n" || ANSWER="n"
+  if [[ "$ANSWER" =~ ^[Yy]$ ]]; then
+    echo -e "Connecting to terminal...\npress Ctrl+O to exit"
+    qm terminal "$VM_ID"
+  fi
+fi
 
 #---
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>

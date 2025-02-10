@@ -641,7 +641,7 @@ fi
 
 if ! qm create "$VM_ID" \
   --name "${VM_NAME}" \
-  --memory 8196 \
+  --memory 8192 \
   --machine q35 \
   --cores 4 \
   --sockets 1 \

@@ -571,8 +571,9 @@ echo -e "#\n##\n" >> "${CNIP_FILE}"
 echo -e "\n## Services install and starting\n#" >> "${CNIP_FILE}"
 echo "runcmd:" >> "${CNIP_FILE}"
 cat <<-EOF >> "${CNIP_FILE}"
+  - export DEBIAN_FRONTEND=noninteractive
   - ['apt', 'update']
-  - ['apt', 'upgrade', '-y']
+  - ['apt', '-y', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confnew', 'upgrade']
   - ['apt', 'install', '-y', 'apt-transport-https', 'ca-certificates', 'curl', 'gnupg']
   - ['mkdir', '-p', '/usr/share/keyrings']
   - curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg

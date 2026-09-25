@@ -78,6 +78,7 @@ FILE_RAW="debian-12-genericcloud-amd64.raw"    # name image debian genericcloud
 VM_DISK_SIZE=6            # disk size in gigabytes.
 VM_MEMORY=2048            # memory size in megabytes: 1024 2048 4096 8192
 VM_CORES=2                # count cores
+VM_NET_QUEUES="auto"      # network multiqueue: "auto" (equals VM_CORES), a number, or "false"/0 to disable
 URL_RAW="https://cdimage.debian.org/images/cloud/bookworm/latest/"  # url image debian
 URL_RAW_SHA="${URL_RAW}SHA512SUMS"                                  # url hash sums images debian
 KEYS_PATH=/root/.keys/    # directory where keys for ssh access will be located
@@ -694,6 +695,37 @@ fi
 # --- STEP 3: Creating virtual machine ---
 log "STEP 3: Creating virtual machine with ID $VM_ID..."
 
+log "Configuring network multiqueue..."
+NET_QUEUES_OPT=""
+
+# Переводим значение в нижний регистр для надежного сравнения
+VM_NET_QUEUES_LOWER="${VM_NET_QUEUES,,}"
+
+if [[ "$VM_NET_QUEUES_LOWER" == "auto" ]]; then
+  NET_QUEUES_VAL="$VM_CORES"
+elif [[ "$VM_NET_QUEUES" =~ ^[0-9]+$ ]]; then
+  # Если передано число, проверяем, не превышает ли оно количество ядер
+  if (( VM_NET_QUEUES > VM_CORES )); then
+    log "Warning: VM_NET_QUEUES ($VM_NET_QUEUES) exceeds VM_CORES ($VM_CORES). Auto-capping to $VM_CORES."
+    NET_QUEUES_VAL="$VM_CORES"
+  else
+    NET_QUEUES_VAL="$VM_NET_QUEUES"
+  fi
+elif [[ "$VM_NET_QUEUES_LOWER" == "false" || -z "$VM_NET_QUEUES" ]]; then
+  NET_QUEUES_VAL=0
+else
+  log "Error: Invalid value for VM_NET_QUEUES ('$VM_NET_QUEUES'). Use 'auto', a valid number, or 'false'."
+  exit 1
+fi
+
+# Multiqueue имеет смысл только при значении > 1. Если 1 или 0 — оставляем стандартную очередь.
+if (( NET_QUEUES_VAL > 1 )); then
+  NET_QUEUES_OPT=",queues=${NET_QUEUES_VAL}"
+  log "Network multiqueue enabled with $NET_QUEUES_VAL queues."
+else
+  log "Network multiqueue disabled (using standard single queue)."
+fi
+
 log "Creating configuration"
 
 if ! qm create "$VM_ID" \
@@ -703,7 +735,7 @@ if ! qm create "$VM_ID" \
   --cores ${VM_CORES} \
   --sockets 1 \
   --ostype l26 \
-  --net0 virtio,bridge=${VM_BRIDGE},queues=4 \
+  --net0 "virtio,bridge=${VM_BRIDGE}${NET_QUEUES_OPT}" \
   --ipconfig0 "${IPCONFIG}" \
   --nameserver 8.8.8.8 \
   --searchdomain srv \
@@ -799,7 +831,7 @@ else
   fi
 
   log "Configuring SCSI disk for VM ID $VM_ID..."
-  RES=$(qm set "$VM_ID" --scsihw virtio-scsi-pci --scsi0 "${STORAGE_DISK}:${DISK_NAME},backup=0,discard=on,iothread=1,ssd=1")
+  RES=$(qm set "$VM_ID" --scsihw virtio-scsi-single --scsi0 "${STORAGE_DISK}:${DISK_NAME},backup=0,discard=on,iothread=1,ssd=1")
   
   read_disk_size
   log "Current scsi0 disk size: ${DISK_SIZE}G"

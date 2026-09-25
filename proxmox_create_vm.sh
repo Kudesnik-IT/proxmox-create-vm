@@ -3,14 +3,15 @@
 # Название: Kudesnik-IT - Proxmox VM Deployment Script (KIT-PVMDS)
 #
 # Описание: Этот скрипт автоматизирует создание виртуальной машины в Proxmox:
-#   - Скачивает образ Debian 12 (genericcloud).
+#   - Скачивает образ Debian (genericcloud).
 #   - Добавляет образ в виртуальную машину.
 #   - Создает диск cloud-init и настраивает его.
 #   - Генерирует SSH-ключи на сервере Proxmox и добавляет публичный ключ в cloud-init.
 #   - В виртуальной машине через cloud-init:
 #     - Создает нового пользователя.
 #     - Настраивает сеть.
-#     - Устанавливает Docker и Docker Compose.
+#     - Устанавливает Docker и Docker Compose (опционально).
+#     - Применяет профиль безопасности SSH.
 #  _  __              _                        _   _              ___   _____ 
 # | |/ /  _   _    __| |   ___   ___   _ __   (_) | | __         |_ _| |_   _|
 # | ' /  | | | |  / _` |  / _ \ / __| | '_ \  | | | |/ /  _____   | |    | |  
@@ -19,77 +20,100 @@
 #                                                                             
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
 # GitHub: https://github.com/Kudesnik-IT/proxmox-create-vm
-# Версия: 1.0
+# Версия: 1.1
 # Дата создания: 2025-02-06
-# Последнее обновление: 2025-02-06
+# Последнее обновление: 2026-09-25
 #===============================================================================
-
+#
 # Лицензия: MIT License
 # Copyright (c) 2025 Kudesnik-IT
 #
 # Разрешается свободное использование, копирование, модификация, объединение,
 # публикация, распространение, сублицензирование и/или продажа копий ПО.
-
+#
 # Зависимости:
 # - Bash (тестировано на версии 5.2+)
 # - Proxmox VE 8.2+
 # - Coreutils (для команды echo, curl и т.д.)
 # - SSH-клиент
-
+#
 # Инструкции по использованию:
 # 1. Сделайте скрипт исполняемым: chmod +x create_vm.sh
-# 2. Запустите скрипт: ./create_vm.sh
+# 2. Запустите скрипт: ./create_vm.sh <num> [options]
 # 3. Следуйте инструкциям на экране.
-
+#
 # История изменений:
 # v1.0 (2025-02-06): Первая версия скрипта.
+# v1.1 (2026-09-25): 
+#   - [Added] Поддержка внешних файлов конфигурации (.env) и аргумент -c/--config.
+#   - [Added] Аргумент -n/--name для принудительного задания имени виртуальной машины.
+#   - [Changed] Параметры CPU, RAM и тегов (VM_TAGS) вынесены в гибкие переменные.
+#   - [Changed] Установка Docker-демона вынесена в опциональный параметр (SET_INSTALL_DOCKER).
+#   - [Security] В cloud-init добавлен вызов скриптов настройки SSH и Docker-демона.
 #===============================================================================
-
-
 
 set -e                    # automatically terminate execution on first error
 set -u                    # prevent use of undefined variables
 set -o pipefail           # handle errors in pipelines
 
-
 ##########################
 # --- DEFINE VARIABLES ---
 ##########################
+# БАЗОВЫЕ ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ (Defaults)
+# Они могут быть перезаписаны конфигурационным файлом или аргументами запуска
 
 VM_ID="1"                 # VM ID = ${VM_ID}{value 1st argument}
 VM_NAME="Debian-Srv"      # VM name = ${VM_NAME}{value 1st argument}
-
 VM_IP=""                  # VM IPv4 value format "<IPv4/Mask>; If empty string, then there will be DHCP setting."
 VM_GATEWAY=""             # VM network gateway, only if set VM_IP address
 VM_BRIDGE="vmbr0"         # VM bridge name
-
+VM_TAGS=""                # VM tags (e.g. "DMZ,Prod")
 CI_USER="virtman"         # username
 CI_PASS=''                # hash of the user's password if password authentication is used
-
 STORAGE_SNIP=local        # storage for snippets (usually the same as the iso images storage)
 STORAGE_DISK=local-lvm    # storage for virtual machine disk images
-
 SNIP_PATH=/var/lib/vz/snippets/       # snippets storage directory
 ISO_PATH=/var/lib/vz/template/iso/    # iso image storage directory
-
 FILE_RAW="debian-12-genericcloud-amd64.raw"    # name image debian genericcloud
 VM_DISK_SIZE=6            # disk size in gigabytes.
-
-URL_RAW="https://cdimage.debian.org/images/cloud/bookworm/latest/"                 # url image debianm  
-URL_RAW_SHA="https://cdimage.debian.org/images/cloud/bookworm/latest/SHA512SUMS"   # url hash sums images debian
-
+VM_MEMORY=2048            # memory size in megabytes: 1024 2048 4096 8192
+VM_CORES=2                # count cores
+URL_RAW="https://cdimage.debian.org/images/cloud/bookworm/latest/"  # url image debian
+URL_RAW_SHA="${URL_RAW}SHA512SUMS"                                  # url hash sums images debian
 KEYS_PATH=/root/.keys/    # directory where keys for ssh access will be located
 KEY_NAME="vm-"            # prefix for creating key name
-
 SET_KEY_PASS=false        # set a secret phrase for the key
 SET_USER_PASS=false       # create a password for the user        
-RUN_VM=ask                # start the virtual machine after it is created: true (always run), false (никогда не запускать), ask (always ask)
-SET_FILE_RAW_IMG=true     # adds the extension ".img" to FILE_RAW, then the file will be visible if it is in the iso image directory
+RUN_VM=ask                # start the virtual machine after it is created: true (always run), false, ask
+SET_FILE_RAW_IMG=true     # adds the extension ".img" to FILE_RAW
 DEL_FILE_RAW=false        # delete file after creating virtual machine
 SET_IP_FROM_ID=false      # if the IP address is specified, then the value of the 1st argument will be added to the 4th octet
-
 SET_DEL_CLOUDINIT=false   # remove service cloud-init after execution
+SET_INSTALL_DOCKER=true   # install Docker on a virtual machine
 
+##########################
+# --- LOAD CONFIG FILE ---
+##########################
+# 1. Определяем директорию скрипта и ищем файл по умолчанию
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)
+CONFIG_FILE="${SCRIPT_DIR}/proxmox_vm.env"
+
+# 2. Предварительный проход: ищем переданный флаг -c или --config
+ARGS=("$@")
+for ((i=0; i<${#ARGS[@]}; i++)); do
+    if [[ "${ARGS[$i]}" == "-c" || "${ARGS[$i]}" == "--config" ]]; then
+        if [[ -n "${ARGS[$i+1]:-}" && ! "${ARGS[$i+1]}" =~ ^- ]]; then
+            CONFIG_FILE="${ARGS[$i+1]}"
+        fi
+        break
+    fi
+done
+
+# 3. Подгружаем параметры, если файл существует
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo -e "[$(date +'%Y-%m-%d %H:%M:%S')] Loading configuration from: $CONFIG_FILE"
+    source "$CONFIG_FILE"
+fi
 
 ###################
 # --- FUNCTIONS ---
@@ -111,8 +135,10 @@ help() {
 
   Options:
     -h, --help         show this help message and exit
+    -c, --config       <file> configuration file .env to load
+    -n, --name         <string> VM name
     -u, --username     creating a new user with the set name
-    -p, --password    hash user password for authorization
+    -p, --password     hash user password for authorization
     -a, --auth         <yes | no> use password authentication
     -i, --ip           <xxx.xxx.xxx.xxx/xx> ip address and mask for VM
     -g, --gateway      <xxx.xxx.xxx.xxx> ip address gateway for VM
@@ -146,7 +172,7 @@ download_data() {
       DOWNLOADED_DATA=$(wget --timeout="$TIMEOUT" --tries=1 -qO- "$URL")
       if [[ $? -eq 0 && -n "$DOWNLOADED_DATA" ]]; then
         log "Data successfully downloaded into variable."
-		DOWNLOADED_CONTENT="$DOWNLOADED_DATA"   #  save data to global variable DOWNLOADED_CONTENT
+        DOWNLOADED_CONTENT="$DOWNLOADED_DATA"   #  save data to global variable DOWNLOADED_CONTENT
         return 0
       else
         log "Attempt $attempt failed."
@@ -197,7 +223,7 @@ verify_hash() {
 # Function to update the 4th octet of an IP address
 update_ip() {
     local ip_mask="$1"
-    local id_num="$2"
+    local id_num=$((10#$2))
 
     IFS='/' read -r ip mask <<< "$ip_mask"
     IFS='.' read -r octet1 octet2 octet3 octet4 <<< "$ip"
@@ -248,8 +274,10 @@ view_report() {
 
   echo -e " ${GREEN}✓ ${NC}The root system disk size is ${CYAN}${VM_DISK_SIZE}${NC} GB.\n"
 
-  # Docker-compose installation
-  echo -e " ${GREEN}✓ ${NC}The package ${CYAN}docker-compose${NC} should be installed on the virtual machine.\n"
+  # Docker installation
+  if $SET_INSTALL_DOCKER; then
+    echo -e " ${GREEN}✓ ${NC}The package ${CYAN}docker-compose${NC} should be installed on the virtual machine.\n"
+  fi
 
   # RAW file
   if ! $DEL_FILE_RAW ; then
@@ -276,7 +304,7 @@ view_report() {
   # User access
   echo -e " ${GREEN}✓ ${NC}The user for accessing the virtual machine is: ${CYAN}${CI_USER}${NC}.\n"
   if [[ -n "$VM_IP" ]]; then
-    echo -e "      >_ ssh -i ${KEYS_PATH}${KEY_NAME} ${CI_USER}@${VM_IP}\n"
+    echo -e "      >_ ssh -i ${KEYS_PATH}${KEY_NAME} ${CI_USER}@${VM_IP2}\n"
   else
     echo -e "      >_ ssh -i ${KEYS_PATH}${KEY_NAME} ${CI_USER}@<IP>\n"
   fi
@@ -325,7 +353,6 @@ This script creates a virtual machine in Proxmox...
 
 EOF
 
-
 # reading arguments
 
 # Checking if at least one argument is present
@@ -344,9 +371,27 @@ if ! [[ "$ID_NUM" =~ ^[0-9]+$ ]]; then
 fi
 
 FULL_PATH="${ISO_PATH}${FILE_RAW}"
+SET_VM_NAME=false
 
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
+        -c|--config)
+            if [[ -z "${2+x}" || -z "$2" || "$2" =~ ^- ]]; then
+                echo "Error: No value for argument '$1'"
+                help
+            fi
+            # Файл уже загружен в блоке LOAD CONFIG FILE, просто сдвигаем
+            shift 2
+            ;;
+        -n|--name)
+            if [[ -z "${2+x}" || -z "$2" || "$2" =~ ^- ]]; then
+                echo "Error: No value for argument '$1'"
+                help
+            fi
+            VM_NAME="$2"
+            SET_VM_NAME=true
+            shift 2
+            ;;
         -u|--username)
             if [[ -z "${2+x}" || -z "$2" || "$2" =~ ^- ]]; then
                 echo "Error: No value for argument '$1'"
@@ -403,6 +448,7 @@ while [[ "$#" -gt 0 ]]; do
                 fi
 
                 VM_IP="$2"
+                SET_IP_FROM_ID=false
             else
                 echo "Error: Invalid IP address format with mask ('$2'). Expected CIDR format (e.g. 10.0.0.1/24)."
                 help
@@ -455,12 +501,24 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 VM_ID=$((10#${VM_ID}${ID_NUM}))
-VM_NAME="Debian-Srv${ID_NUM}"
+if ! $SET_VM_NAME ; then
+  VM_NAME="${VM_NAME}${ID_NUM}"
+fi
 URL_RAW="${URL_RAW}${FILE_RAW}"
 KEY_NAME="${KEY_NAME}${VM_ID}"
 KEYS="${KEYS_PATH}${KEY_NAME}"
 FILE_NAME="userdata-${VM_ID}.yaml"
 
+if [[ -n "$VM_IP" ]]; then
+  if $SET_IP_FROM_ID ; then 
+    VM_IP=$(update_ip "$VM_IP" "$ID_NUM")
+  fi
+  IPCONFIG="ip=${VM_IP},gw=${VM_GATEWAY}"
+  VM_IP2=${VM_IP%%/*}
+else
+  IPCONFIG="ip=dhcp"
+  VM_IP2="0.0.0.0"
+fi
 
 log "Virtual machine ID $VM_ID creation starting"
 
@@ -474,7 +532,6 @@ if ! [[ -f "${FULL_PATH}" ]] && $SET_FILE_RAW_IMG; then
   log "The extension .img is added to the file name file.raw, the resulting file will be file.raw.img"
   FULL_PATH="${FULL_PATH}.img"
 fi
-
 
 # --- STEP 1: Creating keys ---
 log "STEP 1: Creating keys"
@@ -503,7 +560,6 @@ else
     exit 1
   fi
 fi
-
 
 # --- STEP 2: Creating cloud config ---
 log "STEP 2: Creating cloud config"
@@ -545,7 +601,7 @@ echo -e "#cloud-config\n#############\n" > "${CNIP_FILE}"
 
 # Main setting
 echo -e "\n## Main settings\n#" >> "${CNIP_FILE}"
-echo "hostname: Debian-Srv${ID_NUM}" >> "${CNIP_FILE}"
+echo "hostname: ${VM_NAME,,}" >> "${CNIP_FILE}"
 echo "manage_etc_hosts: true" >> "${CNIP_FILE}"
 echo -e "#\n##\n" >> "${CNIP_FILE}"
 
@@ -575,6 +631,9 @@ cat <<-EOF >> "${CNIP_FILE}"
   - ['apt', 'update']
   - ['apt', '-y', '-o', 'Dpkg::Options::=--force-confdef', '-o', 'Dpkg::Options::=--force-confnew', 'upgrade']
   - ['apt', 'install', '-y', 'apt-transport-https', 'ca-certificates', 'curl', 'gnupg']
+EOF
+if $SET_INSTALL_DOCKER; then
+cat <<-EOF >> "${CNIP_FILE}"
   - ['mkdir', '-p', '/usr/share/keyrings']
   - curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
   - echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian \$(grep -oP '(?<=VERSION_CODENAME=)[^ ]+' /etc/os-release) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -583,6 +642,11 @@ cat <<-EOF >> "${CNIP_FILE}"
   - ['apt', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-compose-plugin']
   - ['systemctl', 'enable', 'docker']
   - ['systemctl', 'start', 'docker']
+  - curl -fsSL https://raw.githubusercontent.com/Kudesnik-IT/docker-daemon-setup/refs/heads/main/docker_setup.sh | bash >> /var/log/docker_setup.log 2>&1
+EOF
+fi
+cat <<-EOF >> "${CNIP_FILE}"
+  - curl -fsSL https://raw.githubusercontent.com/Kudesnik-IT/ssh-security-setup/refs/heads/main/ssh_security_setup.sh | bash -s -- -u "${CI_USER}" -p 50000 -i ${VM_IP2} >> /var/log/ssh_security_setup.log 2>&1
 EOF
 if $SET_DEL_CLOUDINIT ; then
 cat <<-EOF >> "${CNIP_FILE}"
@@ -632,19 +696,11 @@ log "STEP 3: Creating virtual machine with ID $VM_ID..."
 
 log "Creating configuration"
 
-IPCONFIG="ip=dhcp"
-if [[ -n "$VM_IP" ]]; then
-  if $SET_IP_FROM_ID ; then 
-    VM_IP=$(update_ip "$VM_IP" "$ID_NUM")
-  fi
-  IPCONFIG="ip=${VM_IP},gw=${VM_GATEWAY}"
-fi
-
 if ! qm create "$VM_ID" \
   --name "${VM_NAME}" \
-  --memory 8192 \
+  --memory ${VM_MEMORY} \
   --machine q35 \
-  --cores 4 \
+  --cores ${VM_CORES} \
   --sockets 1 \
   --ostype l26 \
   --net0 virtio,bridge=${VM_BRIDGE},queues=4 \
@@ -657,6 +713,7 @@ if ! qm create "$VM_ID" \
   --balloon 0 \
   --cicustom "user=${STORAGE_SNIP}:snippets/${FILE_NAME}" \
   --serial0 socket \
+  ${VM_TAGS:+--tags "${VM_TAGS}"} \
   ; then
   log "Error: Failed to create virtual machine with ID $VM_ID."
   exit 1
@@ -778,7 +835,6 @@ if [[ $? -ne 0 ]]; then
   log "Error: Failed to set boot order for VM ID $VM_ID."
   exit 1
 fi
-
 
 # Verify boot order
 if qm config "$VM_ID" | grep -q "boot.*order=scsi0"; then

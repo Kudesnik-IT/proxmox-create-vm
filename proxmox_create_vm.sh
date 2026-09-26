@@ -20,9 +20,9 @@
 #                                                                             
 # Автор: Kudesnik-IT <kudesnik.it@gmail.com>
 # GitHub: https://github.com/Kudesnik-IT/proxmox-create-vm
-# Версия: 1.1
+# Версия: 1.2
 # Дата создания: 2025-02-06
-# Последнее обновление: 2026-09-25
+# Последнее обновление: 2026-09-26
 #===============================================================================
 #
 # Лицензия: MIT License
@@ -50,6 +50,11 @@
 #   - [Changed] Параметры CPU, RAM и тегов (VM_TAGS) вынесены в гибкие переменные.
 #   - [Changed] Установка Docker-демона вынесена в опциональный параметр (SET_INSTALL_DOCKER).
 #   - [Security] В cloud-init добавлен вызов скриптов настройки SSH и Docker-демона.
+# v1.2 (2026-09-26): 
+#   - [Added] Опциональное создание swap-файла средствами cloud-init (аргумент -s/--swap).
+#   - [Added] Настройка параметра ядра vm.swappiness через cloud-init (аргумент --swappiness).
+#   - [Changed] Добавлена валидация: игнорирование пользовательского параметра swappiness при отключенном swap.
+#   - [Changed] В терминальный отчет добавлена информация о конфигурации swap.
 #===============================================================================
 
 set -e                    # automatically terminate execution on first error
@@ -91,6 +96,9 @@ DEL_FILE_RAW=false        # delete file after creating virtual machine
 SET_IP_FROM_ID=false      # if the IP address is specified, then the value of the 1st argument will be added to the 4th octet
 SET_DEL_CLOUDINIT=false   # remove service cloud-init after execution
 SET_INSTALL_DOCKER=true   # install Docker on a virtual machine
+SET_SWAP=false            # Whether to create a swap file
+SWAP_SIZE="4G"            # Default swap file size
+SWAP_SWAPPINESS=60        # Swap usage aggressiveness level
 
 ##########################
 # --- LOAD CONFIG FILE ---
@@ -144,6 +152,8 @@ help() {
     -i, --ip           <xxx.xxx.xxx.xxx/xx> ip address and mask for VM
     -g, --gateway      <xxx.xxx.xxx.xxx> ip address gateway for VM
     -f, --file         name image debian genericcloud
+    -s, --swap         [size] create a swap file (default size 4G if flag is passed without value)
+    --swappiness       <0-100> set vm.swappiness (default: 60, applies only if != 60)
 
 EOF
   exit
@@ -278,6 +288,15 @@ view_report() {
   # Docker installation
   if $SET_INSTALL_DOCKER; then
     echo -e " ${GREEN}✓ ${NC}The package ${CYAN}docker-compose${NC} should be installed on the virtual machine.\n"
+  fi
+
+  # Swap File Info (ДОБАВИТЬ ЭТОТ БЛОК)
+  if $SET_SWAP ; then
+    echo -e " ${GREEN}✓ ${NC}Swap file of size ${CYAN}${SWAP_SIZE}${NC} will be configured."
+    if [[ "$SWAP_SWAPPINESS" != "60" ]]; then
+      echo -e "      • vm.swappiness set to: ${CYAN}${SWAP_SWAPPINESS}${NC}"
+    fi
+    echo -e "\n"
   fi
 
   # RAW file
@@ -491,6 +510,27 @@ while [[ "$#" -gt 0 ]]; do
             FULL_PATH="${ISO_PATH}${FILE_RAW}"
             shift 2
             ;;
+        -s|--swap)
+            SET_SWAP=true
+            if [[ -n "${2+x}" && ! "$2" =~ ^- ]]; then
+                SWAP_SIZE="$2"
+                shift 2
+            else
+                shift 1
+            fi
+            ;;
+        --swappiness)
+            if [[ -z "${2+x}" || -z "$2" || "$2" =~ ^- ]]; then
+                echo "Error: No value for argument '$1'"
+                help
+            fi
+            if ! [[ "$2" =~ ^[0-9]+$ ]] || (( $2 < 0 || $2 > 100 )); then
+                echo "Error: Invalid swappiness value ('$2'). Valid range: 0-100."
+                exit 1
+            fi
+            SWAP_SWAPPINESS="$2"
+            shift 2
+            ;;
         -h|--help)
             help
             ;;
@@ -500,6 +540,13 @@ while [[ "$#" -gt 0 ]]; do
             ;;
     esac
 done
+
+# --- VALIDATION AND DEPENDENCIES ---
+
+if ! $SET_SWAP && [[ "$SWAP_SWAPPINESS" != "60" ]]; then
+  log "Warning: swappiness is set to $SWAP_SWAPPINESS, but swap file creation (SET_SWAP) is disabled. Swappiness setting will be ignored."
+  SWAP_SWAPPINESS="60"
+fi
 
 VM_ID=$((10#${VM_ID}${ID_NUM}))
 if ! $SET_VM_NAME ; then
@@ -624,9 +671,33 @@ echo "disable_root: true" >> "${CNIP_FILE}"
 echo "ssh_pwauth: false" >> "${CNIP_FILE}"
 echo -e "#\n##\n" >> "${CNIP_FILE}"
 
+# Swap configuration
+if $SET_SWAP; then
+  echo -e "\n## Swap configuration\n#" >> "${CNIP_FILE}"
+  echo "swap:" >> "${CNIP_FILE}"
+  echo "  filename: /swapfile" >> "${CNIP_FILE}"
+  echo "  size: ${SWAP_SIZE}" >> "${CNIP_FILE}"
+  echo -e "#\n##\n" >> "${CNIP_FILE}"
+fi
+
+# Sysctl swappiness tuning
+if [[ "$SWAP_SWAPPINESS" != "60" ]]; then
+  echo -e "\n## Sysctl configuration\n#" >> "${CNIP_FILE}"
+  echo "write_files:" >> "${CNIP_FILE}"
+  echo "  - path: /etc/sysctl.d/99-swappiness.conf" >> "${CNIP_FILE}"
+  echo "    content: |" >> "${CNIP_FILE}"
+  echo "      vm.swappiness=${SWAP_SWAPPINESS}" >> "${CNIP_FILE}"
+  echo -e "#\n##\n" >> "${CNIP_FILE}"
+fi
+
 # Services
 echo -e "\n## Services install and starting\n#" >> "${CNIP_FILE}"
 echo "runcmd:" >> "${CNIP_FILE}"
+if [[ "$SWAP_SWAPPINESS" != "60" ]]; then
+cat <<-EOF >> "${CNIP_FILE}"
+  - ['sysctl', '--system']
+EOF
+fi
 cat <<-EOF >> "${CNIP_FILE}"
   - export DEBIAN_FRONTEND=noninteractive
   - ['apt', 'update']
